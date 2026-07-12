@@ -82,3 +82,6 @@ exclude_lines = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["policyeval"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [".claude"]
