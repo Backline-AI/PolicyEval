@@ -46,6 +46,19 @@ _CONTEXT_SECTION = """
 {context}
 """
 
+# Key order in these templates is load-bearing, not cosmetic. The judge writes
+# JSON one token at a time, so a "score" placed before "reasoning" is committed
+# before any analysis exists to support it — and nothing downstream can revise
+# it. Observed failure: a judge scored an at-least-version rule 0.0, then wrote
+# "…but the requirement is at least 1.18.0. Wait, 1.20.0 >= 1.18.0, so this is
+# actually satisfied." The reasoning reached the right answer one field too
+# late, and the 0.0 propagated as a hard failure. Reasoning first makes the
+# analysis the score's context instead of its justification.
+_REASON_BEFORE_SCORE_INSTRUCTION = """\
+Emit the keys in exactly the order shown. "reasoning" comes before "score", and
+"score" must state the conclusion the reasoning actually reached — reason first,
+then score, rather than scoring and then justifying it."""
+
 _BATCH_PROMPT_TEMPLATE = """\
 You are evaluating a model output against a set of policy rules.
 {input_section}
@@ -57,8 +70,8 @@ You are evaluating a model output against a set of policy rules.
 
 For EACH rule, return:
 - "rule_id": the rule's id
-- "score": {score_instruction}
 - "reasoning": a concise explanation (1-3 sentences) for this specific rule
+- "score": {score_instruction}
 
 Also return:
 - "overall_reasoning": a short summary of the overall adherence assessment
@@ -66,11 +79,13 @@ Also return:
 Return a JSON object with this exact shape:
 {{
   "rule_results": [
-    {{"rule_id": "R1", "score": 0.0, "reasoning": "..."}},
+    {{"rule_id": "R1", "reasoning": "...", "score": 0.0}},
     ...
   ],
   "overall_reasoning": "..."
 }}
+
+{reason_before_score}
 """
 
 _SEQUENTIAL_PROMPT_TEMPLATE = """\
@@ -88,9 +103,11 @@ Description: {rule_description}{scope_line}
 Return a JSON object with this exact shape:
 {{
   "rule_id": "{rule_id}",
-  "score": <number>,
-  "reasoning": "..."
+  "reasoning": "...",
+  "score": <number>
 }}
+
+{reason_before_score}
 """
 
 
@@ -457,6 +474,7 @@ def _build_batch_prompt(
         context_section=_build_context_section(context),
         rules_block=_format_rules_block(rules),
         score_instruction=_batch_score_instruction(rules),
+        reason_before_score=_REASON_BEFORE_SCORE_INSTRUCTION,
     )
 
 
@@ -475,6 +493,7 @@ def _build_sequential_prompt(
         rule_description=rule.description,
         scope_line=scope_line,
         score_instruction=_score_instruction_for_rule(rule),
+        reason_before_score=_REASON_BEFORE_SCORE_INSTRUCTION,
     )
 
 

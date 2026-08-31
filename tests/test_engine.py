@@ -291,3 +291,133 @@ class TestContext:
         coverage_prompt = judge.calls[0][1]
         assert "## Context" in coverage_prompt
         assert context in coverage_prompt
+
+
+_SHAPE_MARKER = "Return a JSON object with this exact shape:"
+
+
+def json_shape(prompt: str) -> str:
+    """The requested-JSON block of a judge prompt, without the prose around it.
+
+    The prose deliberately names both "reasoning" and "score" in the right
+    order, so an ordering assertion over the whole prompt passes even when the
+    shape itself is wrong. Ordering must be checked against the shape.
+    """
+    start = prompt.index(_SHAPE_MARKER) + len(_SHAPE_MARKER)
+    end = prompt.index("\n}", start)
+    return prompt[start:end]
+
+
+def key_order(block: str, *keys: str) -> list[int]:
+    """Positions of each key in *block*, asserting each one appears exactly once."""
+    positions = []
+    for key in keys:
+        quoted = f'"{key}"'
+        assert block.count(quoted) == 1, f"{quoted} appears {block.count(quoted)}x"
+        positions.append(block.index(quoted))
+    return positions
+
+
+class TestReasonBeforeScore:
+    """The judge writes JSON left to right, so a "score" emitted before its
+    "reasoning" is committed before the analysis that should decide it exists.
+
+    Observed in production: a rule requiring "at least 1.18.0" was scored 0.0
+    against a resolved 1.20.0, and the reasoning field then read "…Wait,
+    1.20.0 >= 1.18.0, so this is actually satisfied." The judge reached the
+    right answer one field too late and the 0.0 propagated as a hard failure.
+    These tests pin the key order in every prompt that asks for a score.
+    """
+
+    def test_batch_adherence_shape_puts_reasoning_before_score(self):
+        judge = SequentialMockJudge([BATCH_RESPONSE, COVERAGE_RESPONSE])
+        engine = EvaluationEngine(judge=judge)
+
+        engine.evaluate("input", "output", SIMPLE_POLICY)
+
+        shape = json_shape(judge.calls[0][1])
+        rule_id, reasoning, score = key_order(shape, "rule_id", "reasoning", "score")
+        assert rule_id < reasoning < score, shape
+
+    def test_batch_adherence_bullet_list_puts_reasoning_before_score(self):
+        """The per-key bullet list above the shape is read as authoritative too."""
+        judge = SequentialMockJudge([BATCH_RESPONSE, COVERAGE_RESPONSE])
+        engine = EvaluationEngine(judge=judge)
+
+        engine.evaluate("input", "output", SIMPLE_POLICY)
+
+        bullets = judge.calls[0][1].split(_SHAPE_MARKER)[0]
+        assert bullets.index('- "reasoning"') < bullets.index('- "score"'), bullets
+
+    def test_sequential_adherence_shape_puts_reasoning_before_score(self):
+        seq_response = {"rule_id": "R1", "reasoning": "Good", "score": 1.0}
+        seq_response_2 = {"rule_id": "R2", "reasoning": "OK", "score": 0.9}
+        judge = SequentialMockJudge([seq_response, seq_response_2, COVERAGE_RESPONSE])
+        engine = EvaluationEngine(judge=judge, eval_mode="sequential")
+
+        engine.evaluate("input", "output", SIMPLE_POLICY)
+
+        for _system_prompt, prompt in judge.calls[:2]:
+            shape = json_shape(prompt)
+            reasoning, score = key_order(shape, "reasoning", "score")
+            assert reasoning < score, shape
+
+    def test_coverage_shape_puts_every_reasoning_before_its_score(self):
+        judge = SequentialMockJudge([COVERAGE_RESPONSE])
+        engine = EvaluationEngine(judge=judge)
+
+        engine.evaluate("input", "output", SIMPLE_POLICY, metrics=["coverage"])
+
+        shape = json_shape(judge.calls[0][1])
+        # Per-action severity is a score too, so it follows its own reasoning;
+        # the overall score comes last, after the actions it summarises.
+        description, severity, score = key_order(
+            shape, "description", "severity", "score"
+        )
+        action_reasoning, overall_reasoning = sorted(
+            m for m in _reasoning_positions(shape)
+        )
+        assert description < action_reasoning < severity, shape
+        assert overall_reasoning < score, shape
+        assert severity < overall_reasoning, shape
+
+    def test_every_scoring_prompt_states_the_ordering_requirement(self):
+        """Key order alone is a hint; the instruction is what survives a judge
+        that reorders keys on its own."""
+        judge = SequentialMockJudge([BATCH_RESPONSE, COVERAGE_RESPONSE])
+        engine = EvaluationEngine(judge=judge)
+
+        engine.evaluate("input", "output", SIMPLE_POLICY)
+
+        for _system_prompt, prompt in judge.calls:
+            assert "Emit the keys in exactly the order shown" in prompt
+
+    def test_reordered_response_keys_still_parse(self):
+        """Nothing downstream depends on order — the parsers read by key."""
+        reordered = {
+            "rule_results": [
+                {"reasoning": "Passed.", "score": 1.0, "rule_id": "R1"},
+                {"score": 0.8, "rule_id": "R2", "reasoning": "Mostly."},
+            ],
+            "overall_reasoning": "Fine.",
+        }
+        judge = SequentialMockJudge([reordered, COVERAGE_RESPONSE])
+        engine = EvaluationEngine(judge=judge)
+
+        report = engine.evaluate("input", "output", SIMPLE_POLICY)
+
+        assert report.adherence is not None
+        r1 = next(r for r in report.adherence.rule_results if r.rule_id == "R1")
+        assert r1.score == 1.0
+        assert r1.reasoning == "Passed."
+
+
+def _reasoning_positions(block: str) -> list[int]:
+    """Every `"reasoning"` position in *block* (the coverage shape has two)."""
+    positions = []
+    start = 0
+    while (found := block.find('"reasoning"', start)) != -1:
+        positions.append(found)
+        start = found + 1
+    assert len(positions) == 2, positions
+    return positions
