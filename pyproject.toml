@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "policyeval"
-version = "0.2.1"
+version = "0.2.2"
 description = "LLM-as-a-judge framework for evaluating LLM outputs against policies and rules"
 readme = "README.md"
 requires-python = ">=3.10"
