@@ -46,16 +46,21 @@ Your task:
 
 Return a JSON object with this exact shape:
 {{
-  "score": <float 0.0–1.0>,
-  "reasoning": "<overall explanation of the coverage assessment>",
   "uncovered_actions": [
     {{
       "description": "<what the unexpected action/change is>",
-      "severity": <float 0.0–1.0, how concerning this uncovered action is>,
-      "reasoning": "<why this action is not covered by any rule or the context>"
+      "reasoning": "<why this action is not covered by any rule or the context>",
+      "severity": <float 0.0–1.0, how concerning this uncovered action is>
     }}
-  ]
+  ],
+  "reasoning": "<overall explanation of the coverage assessment>",
+  "score": <float 0.0–1.0>
 }}
+
+Emit the keys in exactly the order shown — it matches the order of the numbered
+task above. Each score follows the reasoning it is based on: enumerate the
+uncovered actions first, explain each one before rating its severity, then score
+the output as a whole. Do not open with a score and justify it afterwards.
 
 If there are no uncovered actions, return an empty array for "uncovered_actions"
 and a score of 1.0.
